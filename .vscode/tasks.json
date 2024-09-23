@@ -16,16 +16,6 @@
       "group": "build"
     },
     {
-      "label": "Generate Release build",
-      "command": "rm -rf build && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && cd ..",
-      "type": "shell",
-      "problemMatcher": ["$tsc"],
-      "presentation": {
-        "reveal": "always"
-      },
-      "group": "build"
-    },
-    {
       "label": "Generate Debug build",
       "command": "rm -rf build && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && cd ..",
       "type": "shell",

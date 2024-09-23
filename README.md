@@ -1,6 +1,8 @@
-# grug Box2D and raylib game
+# box2d-collision-bug
 
-See [my blog post](https://mynameistrez.github.io/2024/02/29/creating-the-perfect-modding-language.html) for an introduction to the grug modding language.
+This repo shows off box2d's `b2World_GetContactEvents()` function having a bug, where it doesn't always report collision.
+
+When in the game, press `C` to clear all bullets.
 
 ## Running
 

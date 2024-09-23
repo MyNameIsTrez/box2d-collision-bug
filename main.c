@@ -285,8 +285,8 @@ static void update(void) {
 
 	b2ContactEvents contactEvents = b2World_GetContactEvents(world_id);
 	for (i32 i = 0; i < contactEvents.hitCount; i++) {
-		b2ContactHitEvent *event = &contactEvents.hitEvents[i];
 		printf("Hit event!\n");
+		b2ContactHitEvent *event = &contactEvents.hitEvents[i];
 		play_collision_sound(event);
 	}
 
