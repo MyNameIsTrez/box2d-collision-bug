@@ -18,14 +18,7 @@
 #define TEXTURE_SCALE 2.0f
 #define PIXELS_PER_METER 20.0f // Taken from Cortex Command, where this program's sprites come from: https://github.com/cortex-command-community/Cortex-Command-Community-Project/blob/afddaa81b6d71010db299842d5594326d980b2cc/Source/System/Constants.h#L23
 #define MAX_ENTITIES 1000 // Prevents box2d crashing when there's more than 32k overlapping entities, which can happen when the game is paused and the player shoots over 32k bullets
-#define FONT_SIZE 10
-#define MAX_MEASUREMENTS 420
 #define MAX_TYPE_FILES 420420
-#define MAX_MESSAGES 10
-#define MAX_MESSAGE_LENGTH 420420
-#define ERROR_MESSAGE_DURATION_MS 5000
-#define ERROR_MESSAGE_FADING_MOMENT_MS 4000
-#define NANOSECONDS_PER_SECOND 1000000000L
 #define MAX_I32_MAP_ENTRIES 420
 
 typedef int32_t i32;
@@ -106,8 +99,6 @@ static struct entity entities[MAX_ENTITIES];
 static size_t entities_size;
 static size_t drawn_entities;
 
-static int debug_line_number;
-
 static b2WorldId world_id;
 
 static Texture background_texture;
@@ -116,9 +107,6 @@ struct measurement {
 	struct timespec time;
 	char *description;
 };
-
-static struct measurement measurements[MAX_MEASUREMENTS];
-static size_t measurements_size;
 
 static struct gun gun_definition;
 static struct bullet bullet_definition;
@@ -129,18 +117,7 @@ static struct entity *gun;
 static struct grug_file *type_files[MAX_TYPE_FILES];
 static size_t type_files_size;
 
-static bool debug_info = true;
 static bool draw_bounding_box = false;
-
-struct message_data {
-	char message[MAX_MESSAGE_LENGTH];
-	struct timespec time;
-};
-
-static struct message_data messages[MAX_MESSAGES];
-static size_t messages_size;
-static size_t messages_start;
-static char message[MAX_MESSAGE_LENGTH];
 
 static i32 next_entity_id;
 
@@ -162,7 +139,6 @@ struct bullet_on_fns {
 	void (*tick)(void *globals, i32 self);
 };
 
-static void add_message(void);
 static void despawn_entity(size_t entity_index);
 static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_file *file, bool flippable, bool enable_hit_events);
 
@@ -174,9 +150,6 @@ static size_t get_entity_index_from_entity_id(i32 id) {
 			return i;
 		}
 	}
-
-	snprintf(message, sizeof(message), "Failed to find the entity with ID %d\n", id);
-	add_message();
 
 	return SIZE_MAX;
 }
@@ -223,9 +196,6 @@ void game_fn_map_set_i32(i32 id, char *key, i32 value) {
 
 	if (i == UINT32_MAX) {
 		if (map->size >= MAX_I32_MAP_ENTRIES) {
-			snprintf(message, sizeof(message), "The i32 map of the entity with ID %d has %d entries, which exceeds MAX_I32_MAP_ENTRIES\n", id, MAX_I32_MAP_ENTRIES);
-			add_message();
-
 			return;
 		}
 
@@ -253,9 +223,6 @@ i32 game_fn_map_get_i32(i32 id, char *key) {
 	struct i32_map *map = entities[entity_index].i32_map;
 
 	if (map->size == 0) {
-		snprintf(message, sizeof(message), "The i32 map of the entity with ID %d is empty, so can't contain the key '%s'\n", id, key);
-		add_message();
-
 		return -1;
 	}
 
@@ -263,9 +230,6 @@ i32 game_fn_map_get_i32(i32 id, char *key) {
 
 	while (true) {
 		if (i == UINT32_MAX) {
-			snprintf(message, sizeof(message), "The i32 map of the entity with ID %d doesn't contain the key '%s'\n", id, key);
-			add_message();
-
 			break;
 		}
 
@@ -324,26 +288,6 @@ void game_fn_play_sound(char *path) {
 
 	// TODO: This doesn't work here, since it frees the sound before it gets played
 	// UnloadSound(sound);
-}
-
-void game_fn_print_bool(bool b) {
-	snprintf(message, sizeof(message), "%s\n", b ? "true" : "false");
-	add_message();
-}
-
-void game_fn_print_string(char *s) {
-	snprintf(message, sizeof(message), "%s\n", s);
-	add_message();
-}
-
-void game_fn_print_f32(float f) {
-	snprintf(message, sizeof(message), "%f\n", f);
-	add_message();
-}
-
-void game_fn_print_i32(i32 i) {
-	snprintf(message, sizeof(message), "%d\n", i);
-	add_message();
 }
 
 float game_fn_rand(float min, float max) {
@@ -409,40 +353,6 @@ void game_fn_define_gun(char *name, char *sprite_path, i32 rounds_per_minute, ch
 	};
 }
 
-static double get_elapsed_ms(struct timespec start, struct timespec end) {
-	return 1.0e3 * (double)(end.tv_sec - start.tv_sec) + 1.0e-6 * (double)(end.tv_nsec - start.tv_nsec);
-}
-
-static void draw_debug_line(const char *text, int x) {
-	DrawText(text, x, debug_line_number++ * FONT_SIZE, FONT_SIZE, RAYWHITE);
-}
-
-static void draw_debug_line_left(const char *text) {
-	draw_debug_line(text, 0);
-}
-
-static void draw_debug_line_right(const char *text) {
-	draw_debug_line(text, SCREEN_WIDTH - MeasureText(text, FONT_SIZE));
-}
-
-static void draw_debug_info(void) {
-	debug_line_number = 0;
-
-	draw_debug_line_left(TextFormat("entities: %zu", entities_size));
-
-	draw_debug_line_left(TextFormat("drawn entities: %zu", drawn_entities));
-
-	debug_line_number = 0;
-
-	draw_debug_line_right(TextFormat("%.2f ms/frame", get_elapsed_ms(measurements[0].time, measurements[measurements_size - 1].time)));
-
-	for (size_t i = 1; i < measurements_size - 1; i++) {
-		struct timespec previous = measurements[i - 1].time;
-		struct timespec current = measurements[i].time;
-		draw_debug_line_right(TextFormat("%.2f %s", get_elapsed_ms(previous, current), measurements[i].description));
-	}
-}
-
 static Vector2 world_to_screen(b2Vec2 p) {
 	return (Vector2){
 		  p.x * TEXTURE_SCALE + SCREEN_WIDTH  / 2.0f,
@@ -496,19 +406,10 @@ static void draw_entity(struct entity entity) {
 	drawn_entities++;
 }
 
-static void record(char *description) {
-	if (debug_info) {
-		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &measurements[measurements_size].time);
-		measurements[measurements_size++].description = description;
-	}
-}
-
 static void draw(void) {
 	BeginDrawing();
-	record("beginning drawing");
 
 	DrawTextureEx(background_texture, Vector2Zero(), 0, 2, WHITE);
-	record("drawing background");
 
 	drawn_entities = 0;
 	for (size_t i = 0; i < entities_size; i++) {
@@ -517,54 +418,6 @@ static void draw(void) {
 		if (entity.texture.id > 0) {
 			draw_entity(entity);
 		}
-	}
-	record("drawing entities");
-
-	// Color red = {.r=242, .g=42, .b=42, .a=255};
-	// DrawLine(gun_screen_pos.x, gun_screen_pos.y, mouse_pos.x, mouse_pos.y, red);
-	// record("drawing gun line");
-
-	struct timespec current_time;
-	clock_gettime(CLOCK_MONOTONIC, &current_time);
-
-	size_t i = 0;
-	size_t start = messages_start;
-	size_t size = messages_size;
-	while (i < size) {
-		double elapsed_ms = get_elapsed_ms(messages[(start + i) % MAX_MESSAGES].time, current_time);
-		if (elapsed_ms < ERROR_MESSAGE_DURATION_MS) {
-			break;
-		}
-
-		// Remove the old error message
-		messages_start = (messages_start + 1) % MAX_MESSAGES;
-		messages_size--;
-
-		i++;
-	}
-	record("clearing old error messages");
-
-	for (i = 0; i < messages_size; i++) {
-		Color color = RAYWHITE;
-
-		double elapsed_ms = get_elapsed_ms(messages[(messages_start + i) % MAX_MESSAGES].time, current_time);
-		if (elapsed_ms > ERROR_MESSAGE_FADING_MOMENT_MS) {
-			double alpha = 255.0 * (ERROR_MESSAGE_DURATION_MS - elapsed_ms) / (double)(ERROR_MESSAGE_DURATION_MS - ERROR_MESSAGE_FADING_MOMENT_MS);
-			if (alpha < 0.0) {
-				alpha = 0.0;
-			}
-			assert(alpha >= 0.0 && alpha <= 255.0);
-			color.a = alpha;
-		}
-
-		DrawText(messages[(messages_start + i) % MAX_MESSAGES].message, 0, SCREEN_HEIGHT - FONT_SIZE * (messages_size - i), FONT_SIZE, color);
-	}
-	record("drawing error message");
-
-	record("end");
-
-	if (debug_info) {
-		draw_debug_info();
 	}
 
 	EndDrawing();
@@ -708,9 +561,6 @@ static void copy_entity_definition(struct entity *entity) {
 
 static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_file *file, bool flippable, bool enable_hit_events) {
 	if (entities_size >= MAX_ENTITIES) {
-		snprintf(message, sizeof(message), "Won't spawn entity, as there are already %d entities, exceeding MAX_ENTITIES\n", MAX_ENTITIES);
-		add_message();
-
 		return -1;
 	}
 
@@ -827,59 +677,18 @@ static struct grug_file **get_type_files(char *define_type) {
 	return type_files;
 }
 
-static void add_message(void) {
-	struct message_data *error = &messages[(messages_start + messages_size) % MAX_MESSAGES];
-
-	if (messages_size < MAX_MESSAGES) {
-		messages_size++;
-	} else {
-		// We'll be overwriting the oldest message
-		messages_start = (messages_start + 1) % MAX_MESSAGES;
-	}
-
-	strncpy(error->message, message, MAX_MESSAGE_LENGTH);
-
-	clock_gettime(CLOCK_MONOTONIC, &error->time);
-}
-
-static void update(struct timespec *previous_round_fired_time) {
-	measurements_size = 0;
-	record("start");
-
+static void update(void) {
 	if (grug_mod_had_runtime_error()) {
-		snprintf(message, sizeof(message), "Runtime error: %s\n", grug_get_runtime_error_reason());
-		add_message();
-		snprintf(message, sizeof(message), "Error occurred when the game called %s(), from %s\n", grug_on_fn_name, grug_on_fn_path);
-		add_message();
-
 		draw();
-
-		// struct timespec req = {
-		// 	.tv_sec = 0,
-		// 	.tv_nsec = 0.1 * NANOSECONDS_PER_SECOND,
-		// };
-		// nanosleep(&req, NULL);
 
 		return;
 	}
-	record("checking for runtime error");
 
 	if (grug_regenerate_modified_mods()) {
-		// snprintf(message, sizeof(message), "Loading error: %s:%d: %s\n", grug_error.path, grug_error.line_number, grug_error.msg);
-		snprintf(message, sizeof(message), "Loading error: %s:%d: %s (grug.c:%d)\n", grug_error.path, grug_error.line_number, grug_error.msg, grug_error.grug_c_line_number);
-		add_message();
-
 		draw();
-
-		// struct timespec req = {
-		// 	.tv_sec = 0,
-		// 	.tv_nsec = 0.1 * NANOSECONDS_PER_SECOND,
-		// };
-		// nanosleep(&req, NULL);
 
 		return;
 	}
-	record("mod regeneration");
 
 	static size_t gun_index = 0;
 
@@ -961,19 +770,10 @@ static void update(struct timespec *previous_round_fired_time) {
 	Vector2 gun_screen_pos = world_to_screen(gun_world_pos);
 	Vector2 gun_to_mouse = Vector2Subtract(mouse_pos, gun_screen_pos);
 	double gun_angle = atan2(-gun_to_mouse.y, gun_to_mouse.x);
-	record("calculating gun_angle");
 
-	struct timespec current_time;
-	clock_gettime(CLOCK_MONOTONIC, &current_time);
-
-	double elapsed_ms = get_elapsed_ms(*previous_round_fired_time, current_time);
-	bool can_fire = elapsed_ms > gun->gun.ms_per_round_fired;
-	if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && can_fire) {
-		*previous_round_fired_time = current_time;
-
+	if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
 		game_fn_spawn_bullet("vanilla:pg-7vl", 0.0, 0.0, 0.0, 100.0);
 	}
-	record("calling the gun's on_fire()");
 
 	for (size_t entity_index = 0; entity_index < entities_size; entity_index++) {
 		struct entity *entity = &entities[entity_index];
@@ -985,17 +785,13 @@ static void update(struct timespec *previous_round_fired_time) {
 			}
 		}
 	}
-	record("calling bullets their on_tick()");
 
 	b2Body_SetTransform(gun->body_id, gun_world_pos, b2MakeRot(gun_angle));
-	record("point gun to mouse");
 
 	draw();
 }
 
 int main(void) {
-	// SetTargetFPS(60);
-
 	SetConfigFlags(FLAG_VSYNC_HINT);
 	InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "box2d-raylib");
 
@@ -1003,7 +799,6 @@ int main(void) {
 
 	b2WorldDef world_def = b2DefaultWorldDef();
 	world_def.gravity.y = -9.8f * PIXELS_PER_METER;
-	// world_def.hitEventThreshold = 0.1f;
 	world_id = b2CreateWorld(&world_def);
 
 	background_texture = LoadTexture("background.png");
@@ -1016,14 +811,10 @@ int main(void) {
 	metal_blunt_2 = LoadSound("MetalBlunt2.wav");
 	assert(metal_blunt_2.frameCount > 0);
 
-	struct timespec previous_round_fired_time;
-	clock_gettime(CLOCK_MONOTONIC, &previous_round_fired_time);
-
 	while (!WindowShouldClose()) {
-		update(&previous_round_fired_time);
+		update();
 	}
 
-	// TODO: Are these necessary?
 	UnloadTexture(background_texture);
 	for (size_t i = 0; i < entities_size; i++) {
 		UnloadTexture(entities[i].texture);
