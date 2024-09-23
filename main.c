@@ -18,7 +18,6 @@
 #define TEXTURE_SCALE 2.0f
 #define PIXELS_PER_METER 20.0f // Taken from Cortex Command, where this program's sprites come from: https://github.com/cortex-command-community/Cortex-Command-Community-Project/blob/afddaa81b6d71010db299842d5594326d980b2cc/Source/System/Constants.h#L23
 #define MAX_ENTITIES 1000 // Prevents box2d crashing when there's more than 32k overlapping entities, which can happen when the game is paused and the player shoots over 32k bullets
-#define MAX_TYPE_FILES 420420
 #define MAX_I32_MAP_ENTRIES 420
 
 typedef int32_t i32;
@@ -46,11 +45,6 @@ struct entity {
 	b2BodyId body_id;
 	b2ShapeId shape_id;
 	Texture texture;
-
-	// This has ownership, because grug_resource_reloads[] contains texture paths
-	// that start dangling the moment the .so is unloaded
-	// There is no way for `streq(entity->texture_path, reload.path)` to work without ownership
-	char *texture_path;
 
 	bool flippable;
 	bool enable_hit_events;
@@ -92,9 +86,6 @@ static struct bullet bullet_definition;
 static struct box box_definition;
 
 static struct entity *gun;
-
-static struct grug_file *type_files[MAX_TYPE_FILES];
-static size_t type_files_size;
 
 static bool draw_bounding_box = false;
 
@@ -347,8 +338,6 @@ static void despawn_entity(size_t entity_index) {
 	if (entities[entity_index].texture.id > 0) {
 		UnloadTexture(entities[entity_index].texture);
 
-		free(entities[entity_index].texture_path);
-
 		b2DestroyBody(entities[entity_index].body_id);
 	}
 
@@ -453,18 +442,6 @@ static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_ev
 	return b2CreatePolygonShape(body_id, &shape_def, &polygon);
 }
 
-static char *get_texture_path(enum entity_type entity_type) {
-	switch (entity_type) {
-		case OBJECT_GUN:
-			return "mods/vanilla/m60/m60.png";
-		case OBJECT_BULLET:
-			return "mods/vanilla/m60/pg-7vl.png";
-		case OBJECT_GROUND:
-			return "mods/vanilla/concrete.png";
-	}
-	return NULL;
-}
-
 static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippable, bool enable_hit_events) {
 	if (entities_size >= MAX_ENTITIES) {
 		return -1;
@@ -476,8 +453,6 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippabl
 
 	entity->type = type;
 
-	char *texture_path = get_texture_path(type);
-
 	body_def.userData = (void *)entities_size;
 
 	entity->body_id = b2CreateBody(world_id, &body_def);
@@ -486,10 +461,21 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippabl
 
 	entity->enable_hit_events = enable_hit_events;
 
+	char *texture_path = NULL;
+	switch (type) {
+		case OBJECT_GUN:
+			texture_path = "m60.png";
+			break;
+		case OBJECT_BULLET:
+			texture_path = "pg-7vl.png";
+			break;
+		case OBJECT_GROUND:
+			texture_path = "concrete.png";
+			break;
+	}
+
 	entity->texture = LoadTexture(texture_path);
 	assert(entity->texture.id > 0);
-
-	entity->texture_path = strdup(texture_path);
 
 	entity->shape_id = add_shape(entity->body_id, entity->texture, enable_hit_events);
 
@@ -533,8 +519,7 @@ static struct entity *spawn_gun(b2Vec2 pos) {
 static void spawn_ground(void) {
 	int ground_entity_count = 16;
 
-	char *texture_path = get_texture_path(OBJECT_GROUND);
-	Texture texture = LoadTexture(texture_path);
+	Texture texture = LoadTexture("concrete.png");
 	assert(texture.id > 0);
 
 	for (int i = 0; i < ground_entity_count; i++) {
@@ -547,71 +532,7 @@ static void spawn_ground(void) {
 	UnloadTexture(texture);
 }
 
-static void push_file_containing_fn(struct grug_file *file) {
-	if (type_files_size + 1 > MAX_TYPE_FILES) {
-		fprintf(stderr, "There are more than %d files containing the requested type, exceeding MAX_TYPE_FILES", MAX_TYPE_FILES);
-		exit(EXIT_FAILURE);
-	}
-	type_files[type_files_size++] = file;
-}
-
-static void update_type_files_impl(struct grug_mod_dir dir, char *define_type) {
-	for (size_t i = 0; i < dir.dirs_size; i++) {
-		update_type_files_impl(dir.dirs[i], define_type);
-	}
-	for (size_t i = 0; i < dir.files_size; i++) {
-		if (streq(define_type, dir.files[i].define_type)) {
-			push_file_containing_fn(&dir.files[i]);
-		}
-	}
-}
-
-static struct grug_file **get_type_files(char *define_type) {
-	type_files_size = 0;
-	update_type_files_impl(grug_mods, define_type);
-	return type_files;
-}
-
 static void update(void) {
-	if (grug_mod_had_runtime_error()) {
-		fprintf(stderr, "Runtime error: %s\n", grug_get_runtime_error_reason());
-		fprintf(stderr, "Error occurred when the game called %s(), from %s\n", grug_on_fn_name, grug_on_fn_path);
-
-		draw();
-		return;
-	}
-
-	if (grug_regenerate_modified_mods()) {
-		fprintf(stderr, "Loading error: %s:%d: %s (grug.c:%d)\n", grug_error.path, grug_error.line_number, grug_error.msg, grug_error.grug_c_line_number);
-
-		draw();
-		return;
-	}
-
-	struct grug_file **box_files = get_type_files("box");
-
-	struct grug_file *concrete_file = NULL;
-	// Use the first static box
-	for (size_t i = 0; i < type_files_size; i++) {
-		box_files[i]->define_fn();
-		if (box_definition.static_) {
-			concrete_file = box_files[i];
-			break;
-		}
-	}
-	assert(concrete_file && "There must be at least one static type of box, cause we want to form a floor");
-
-	struct grug_file *crate_file = NULL;
-	// Use the first non-static box
-	for (size_t i = 0; i < type_files_size; i++) {
-		box_files[i]->define_fn();
-		if (!box_definition.static_) {
-			crate_file = box_files[i];
-			break;
-		}
-	}
-	assert(crate_file && "There must be at least one non-static type of box, cause we want to have crates that can fall down");
-
 	static bool initialized = false;
 	if (!initialized) {
 		initialized = true;
@@ -657,9 +578,7 @@ static void update(void) {
 	b2Body_SetTransform(gun->body_id, gun_world_pos, b2MakeRot(gun_angle));
 
 	if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-		char *texture_path = get_texture_path(OBJECT_BULLET);
-
-		Texture texture = LoadTexture(texture_path);
+		Texture texture = LoadTexture("concrete.png");
 		assert(texture.id > 0);
 
 		b2Vec2 local_point = {
