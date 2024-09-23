@@ -2,7 +2,6 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "box2d/box2d.h"
-#include "grug.h"
 #include "raylib.h"
 #include "raymath.h"
 

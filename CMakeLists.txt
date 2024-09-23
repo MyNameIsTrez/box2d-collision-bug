@@ -29,9 +29,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
-include_directories(grug)
-
-add_executable(game main.c grug/grug.c grug/grug.h)
+add_executable(game main.c)
 
 target_compile_options(game PRIVATE
 	-Wall -Wextra -Werror -Wpedantic -Wstrict-prototypes -Wshadow -Wuninitialized -Wfatal-errors -Wno-language-extension-token -g
