@@ -18,7 +18,6 @@
 #define TEXTURE_SCALE 2.0f
 #define PIXELS_PER_METER 20.0f // Taken from Cortex Command, where this program's sprites come from: https://github.com/cortex-command-community/Cortex-Command-Community-Project/blob/afddaa81b6d71010db299842d5594326d980b2cc/Source/System/Constants.h#L23
 #define MAX_ENTITIES 1000 // Prevents box2d crashing when there's more than 32k overlapping entities, which can happen when the game is paused and the player shoots over 32k bullets
-#define MAX_I32_MAP_ENTRIES 420
 
 typedef int32_t i32;
 typedef uint32_t u32;
@@ -29,16 +28,6 @@ enum entity_type {
 	OBJECT_GROUND,
 };
 
-struct i32_map {
-	char *keys[MAX_I32_MAP_ENTRIES];
-	i32 values[MAX_I32_MAP_ENTRIES];
-
-	u32 buckets[MAX_I32_MAP_ENTRIES];
-	u32 chains[MAX_I32_MAP_ENTRIES];
-
-	size_t size;
-};
-
 struct entity {
 	i32 id;
 	enum entity_type type;
@@ -46,10 +35,7 @@ struct entity {
 	b2ShapeId shape_id;
 	Texture texture;
 
-	bool flippable;
 	bool enable_hit_events;
-
-	struct i32_map *i32_map;
 };
 
 struct gun {
@@ -70,199 +56,16 @@ struct box {
 
 static struct entity entities[MAX_ENTITIES];
 static size_t entities_size;
-static size_t drawn_entities;
 
 static b2WorldId world_id;
 
 static Texture background_texture;
 
-struct measurement {
-	struct timespec time;
-	char *description;
-};
-
-static struct gun gun_definition;
-static struct bullet bullet_definition;
-static struct box box_definition;
-
 static struct entity *gun;
-
-static bool draw_bounding_box = false;
 
 static i32 next_entity_id;
 
 static Sound metal_blunt_1;
-static Sound metal_blunt_2;
-
-static size_t sound_cooldown_metal_blunt_1;
-static size_t sound_cooldown_metal_blunt_2;
-
-// TODO: Optimize this to O(1), by adding an array that maps
-// TODO: the entity ID to the entities[] index
-static size_t get_entity_index_from_entity_id(i32 id) {
-	for (size_t i = 0; i < entities_size; i++) {
-		if (entities[i].id == id) {
-			return i;
-		}
-	}
-
-	return SIZE_MAX;
-}
-
-// From https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=bfd/elf.c#l193
-static u32 elf_hash(const char *namearg) {
-	u32 h = 0;
-
-	for (const unsigned char *name = (const unsigned char *) namearg; *name; name++) {
-		h = (h << 4) + *name;
-		h ^= (h >> 24) & 0xf0;
-	}
-
-	return h & 0x0fffffff;
-}
-
-static bool streq(char *a, char *b) {
-	return strcmp(a, b) == 0;
-}
-
-void game_fn_map_set_i32(i32 id, char *key, i32 value) {
-	size_t entity_index = get_entity_index_from_entity_id(id);
-	if (entity_index == SIZE_MAX) {
-		return;
-	}
-
-	struct i32_map *map = entities[entity_index].i32_map;
-
-	u32 bucket_index = elf_hash(key) % MAX_I32_MAP_ENTRIES;
-
-	u32 i = map->buckets[bucket_index];
-
-	while (true) {
-		if (i == UINT32_MAX) {
-			break;
-		}
-
-		if (streq(key, map->keys[i])) {
-			break;
-		}
-
-		i = map->chains[i];
-	}
-
-	if (i == UINT32_MAX) {
-		if (map->size >= MAX_I32_MAP_ENTRIES) {
-			return;
-		}
-
-		i = map->size;
-
-		map->keys[i] = strdup(key);
-		map->values[i] = value;
-		map->chains[i] = map->buckets[bucket_index];
-		map->buckets[bucket_index] = i;
-
-		map->size++;
-	} else {
-		free(map->keys[i]);
-		map->keys[i] = strdup(key);
-		map->values[i] = value;
-	}
-}
-
-i32 game_fn_map_get_i32(i32 id, char *key) {
-	size_t entity_index = get_entity_index_from_entity_id(id);
-	if (entity_index == SIZE_MAX) {
-		return -1;
-	}
-
-	struct i32_map *map = entities[entity_index].i32_map;
-
-	if (map->size == 0) {
-		return -1;
-	}
-
-	u32 i = map->buckets[elf_hash(key) % MAX_I32_MAP_ENTRIES];
-
-	while (true) {
-		if (i == UINT32_MAX) {
-			break;
-		}
-
-		if (streq(key, map->keys[i])) {
-			return map->values[i];
-		}
-
-		i = map->chains[i];
-	}
-
-	return -1;
-}
-
-bool game_fn_map_has_i32(i32 id, char *key) {
-	size_t entity_index = get_entity_index_from_entity_id(id);
-	if (entity_index == SIZE_MAX) {
-		return false;
-	}
-
-	struct i32_map *map = entities[entity_index].i32_map;
-
-	if (map->size == 0) {
-		return false;
-	}
-
-	u32 i = map->buckets[elf_hash(key) % MAX_I32_MAP_ENTRIES];
-
-	while (true) {
-		if (i == UINT32_MAX) {
-			break;
-		}
-
-		if (streq(key, map->keys[i])) {
-			return true;
-		}
-
-		i = map->chains[i];
-	}
-
-	return false;
-}
-
-void game_fn_play_sound(char *path) {
-	Sound sound = LoadSound(path);
-	assert(sound.frameCount > 0);
-
-	PlaySound(sound);
-
-	// TODO: This doesn't work here, since it frees the sound before it gets played
-	// UnloadSound(sound);
-}
-
-float game_fn_rand(float min, float max) {
-    float range = max - min;
-    return min + rand() / (double)RAND_MAX * range;
-}
-
-void game_fn_define_box(char *name, char *sprite_path, bool static_) {
-	box_definition = (struct box){
-		.name = name,
-		.sprite_path = sprite_path,
-		.static_ = static_,
-	};
-}
-
-void game_fn_define_bullet(char *name, char *sprite_path) {
-	bullet_definition = (struct bullet){
-		.name = name,
-		.sprite_path = sprite_path,
-	};
-}
-
-void game_fn_define_gun(char *name, char *sprite_path) {
-	gun_definition = (struct gun){
-		.name = name,
-		.sprite_path = sprite_path,
-	};
-}
 
 static Vector2 world_to_screen(b2Vec2 p) {
 	return (Vector2){
@@ -301,20 +104,15 @@ static void draw_entity(struct entity entity) {
 	b2Rot rot = b2Body_GetRotation(entity.body_id);
 	float angle = b2Rot_GetAngle(rot);
 
-	bool facing_left = (angle > PI / 2) || (angle < -PI / 2);
-    Rectangle source = { 0.0f, 0.0f, (float)texture.width, (float)texture.height * (entity.flippable && facing_left ? -1 : 1) };
+    Rectangle source = { 0.0f, 0.0f, (float)texture.width, (float)texture.height };
     Rectangle dest = { pos_screen.x, pos_screen.y, (float)texture.width*TEXTURE_SCALE, (float)texture.height*TEXTURE_SCALE };
     Vector2 origin = { 0.0f, 0.0f };
 	float rotation = -angle * RAD2DEG;
 	DrawTexturePro(texture, source, dest, origin, rotation, WHITE);
 
-	if (draw_bounding_box) {
-		Rectangle rect = {pos_screen.x, pos_screen.y, texture.width * TEXTURE_SCALE, texture.height * TEXTURE_SCALE};
-		Color color = {.r=42, .g=42, .b=242, .a=100};
-		DrawRectanglePro(rect, origin, -angle * RAD2DEG, color);
-	}
-
-	drawn_entities++;
+	Rectangle rect = {pos_screen.x, pos_screen.y, texture.width * TEXTURE_SCALE, texture.height * TEXTURE_SCALE};
+	Color color = {.r=42, .g=42, .b=242, .a=100};
+	DrawRectanglePro(rect, origin, -angle * RAD2DEG, color);
 }
 
 static void draw(void) {
@@ -322,7 +120,6 @@ static void draw(void) {
 
 	DrawTextureEx(background_texture, Vector2Zero(), 0, 2, WHITE);
 
-	drawn_entities = 0;
 	for (size_t i = 0; i < entities_size; i++) {
 		struct entity entity = entities[i];
 
@@ -341,12 +138,6 @@ static void despawn_entity(size_t entity_index) {
 		b2DestroyBody(entities[entity_index].body_id);
 	}
 
-	struct i32_map *map = entities[entity_index].i32_map;
-	for (size_t i = 0; i < map->size; i++) {
-		free(map->keys[i]);
-	}
-	free(map);
-
 	entities[entity_index] = entities[--entities_size];
 
 	if (entities[entity_index].type == OBJECT_GUN) {
@@ -361,35 +152,7 @@ static void despawn_entity(size_t entity_index) {
 }
 
 static void play_collision_sound(b2ContactHitEvent *event) {
-	// printf("approachSpeed: %f\n", event->approachSpeed);
-
-	float x_normalized = (event->point.x * TEXTURE_SCALE) / (SCREEN_WIDTH / 2); // Between -1.0f and 1.0f
-	// printf("x_normalized: %f\n", x_normalized);
-
-	float y_normalized = (event->point.y * TEXTURE_SCALE) / (SCREEN_HEIGHT / 2); // Between -1.0f and 1.0f
-	// printf("y_normalized: %f\n", y_normalized);
-
-	float distance = sqrtf(x_normalized * x_normalized + y_normalized * y_normalized);
-	// printf("distance: %f\n", distance);
-
-	float audibility = 1.0f;
-	if (distance > 0.0f) { // Prevents a later division by 0.0f
-		distance *= 5.0f;
-
-		// This considers the game to be a 3D space
-		// See https://en.wikipedia.org/wiki/Inverse-square_law
-		audibility = 1.0f / (distance * distance); // Between 0.0f and 1.0f
-
-		// This considers the game to be a 2D space
-		// audibility = 1.0f / distance; // Between 0.0f and 1.0f
-
-		assert(audibility >= 0.0f);
-	}
-	// printf("audibility: %f\n", audibility);
-
 	float volume = event->approachSpeed * 0.01f;
-
-	volume *= audibility;
 
 	if (volume > 1.0f) {
 		volume = 1.0f;
@@ -398,38 +161,9 @@ static void play_collision_sound(b2ContactHitEvent *event) {
 		return;
 	}
 
-	Sound sound;
-	if (rand() % 2 == 0 && sound_cooldown_metal_blunt_1 == 0) {
-		sound = metal_blunt_1;
-		sound_cooldown_metal_blunt_1 = 6;
-		// sound_volume_metal_blunt_1 = ;
-	} else if (sound_cooldown_metal_blunt_2 == 0) {
-		sound = metal_blunt_2;
-		sound_cooldown_metal_blunt_2 = 6;
-		// sound_volume_metal_blunt_2 = ;
-	} else {
-		return;
-	}
+	SetSoundVolume(metal_blunt_1, volume);
 
-	SetSoundVolume(sound, volume);
-
-	float speed = event->approachSpeed * 0.005f;
-	// printf("speed: %f\n", speed);
-	float min_pitch = 0.5f;
-	float max_pitch = 1.5f;
-	float pitch = min_pitch + speed;
-	// printf("pitch: %f\n", pitch);
-	if (pitch > max_pitch) {
-		pitch = max_pitch;
-	}
-	SetSoundPitch(sound, pitch);
-
-	float x_normalized_inverted = -x_normalized; // Because a pan of 1.0f means all the way left, instead of right
-	float pan = 0.5f + x_normalized_inverted / 2.0f; // Between 0.0f and 1.0f
-	// printf("pan: %f\n", pan);
-	SetSoundPan(sound, pan);
-
-	PlaySound(sound);
+	PlaySound(metal_blunt_1);
 }
 
 static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_events) {
@@ -442,7 +176,7 @@ static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_ev
 	return b2CreatePolygonShape(body_id, &shape_def, &polygon);
 }
 
-static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippable, bool enable_hit_events) {
+static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool enable_hit_events) {
 	if (entities_size >= MAX_ENTITIES) {
 		return -1;
 	}
@@ -456,8 +190,6 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippabl
 	body_def.userData = (void *)entities_size;
 
 	entity->body_id = b2CreateBody(world_id, &body_def);
-
-	entity->flippable = flippable;
 
 	entity->enable_hit_events = enable_hit_events;
 
@@ -479,10 +211,6 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippabl
 
 	entity->shape_id = add_shape(entity->body_id, entity->texture, enable_hit_events);
 
-	entity->i32_map = malloc(sizeof(*entity->i32_map));
-	memset(entity->i32_map->buckets, 0xff, MAX_I32_MAP_ENTRIES * sizeof(u32));
-	entity->i32_map->size = 0;
-
 	entity->id = next_entity_id;
 	if (entity->id == INT32_MAX) {
 		next_entity_id = 0;
@@ -502,7 +230,7 @@ static void spawn_bullet(b2Vec2 pos, float angle, b2Vec2 velocity) {
 	body_def.rotation = b2MakeRot(angle);
 	body_def.linearVelocity = velocity;
 
-	spawn_entity(body_def, OBJECT_BULLET, false, true);
+	spawn_entity(body_def, OBJECT_BULLET, true);
 }
 
 static struct entity *spawn_gun(b2Vec2 pos) {
@@ -511,7 +239,7 @@ static struct entity *spawn_gun(b2Vec2 pos) {
 
 	struct entity *gun_entity = entities + entities_size;
 
-	spawn_entity(body_def, OBJECT_GUN, true, false);
+	spawn_entity(body_def, OBJECT_GUN, false);
 
 	return gun_entity;
 }
@@ -526,7 +254,7 @@ static void spawn_ground(void) {
 		b2BodyDef body_def = b2DefaultBodyDef();
 		body_def.position = (b2Vec2){ (i - ground_entity_count / 2) * texture.width, -100.0f };
 
-		spawn_entity(body_def, OBJECT_GROUND, false, false);
+		spawn_entity(body_def, OBJECT_GROUND, false);
 	}
 
 	UnloadTexture(texture);
@@ -556,12 +284,6 @@ static void update(void) {
 	float deltaTime = GetFrameTime();
 	b2World_Step(world_id, deltaTime, 4);
 
-	if (sound_cooldown_metal_blunt_1 > 0) {
-		sound_cooldown_metal_blunt_1--;
-	}
-	if (sound_cooldown_metal_blunt_2 > 0) {
-		sound_cooldown_metal_blunt_2--;
-	}
 	b2ContactEvents contactEvents = b2World_GetContactEvents(world_id);
 	for (i32 i = 0; i < contactEvents.hitCount; i++) {
 		b2ContactHitEvent *event = &contactEvents.hitEvents[i];
@@ -615,8 +337,6 @@ int main(void) {
 
 	metal_blunt_1 = LoadSound("MetalBlunt1.wav");
 	assert(metal_blunt_1.frameCount > 0);
-	metal_blunt_2 = LoadSound("MetalBlunt2.wav");
-	assert(metal_blunt_2.frameCount > 0);
 
 	while (!WindowShouldClose()) {
 		update();
@@ -627,7 +347,6 @@ int main(void) {
 		UnloadTexture(entities[i].texture);
 	}
 	UnloadSound(metal_blunt_1);
-	UnloadSound(metal_blunt_2);
 	CloseAudioDevice();
 	CloseWindow();
 }
