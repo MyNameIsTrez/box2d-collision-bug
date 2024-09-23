@@ -1,6 +1,3 @@
-// So VS Code can find "CLOCK_PROCESS_CPUTIME_ID", and so we can use strdup()
-#define _POSIX_C_SOURCE 200809L
-
 #include "box2d/box2d.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -8,18 +5,12 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
 
 #define SCREEN_WIDTH 1280
 #define SCREEN_HEIGHT 720
 #define TEXTURE_SCALE 2.0f
 #define PIXELS_PER_METER 20.0f // Taken from Cortex Command, where this program's sprites come from: https://github.com/cortex-command-community/Cortex-Command-Community-Project/blob/afddaa81b6d71010db299842d5594326d980b2cc/Source/System/Constants.h#L23
 #define MAX_ENTITIES 1000 // Prevents box2d crashing when there's more than 32k overlapping entities, which can happen when the game is paused and the player shoots over 32k bullets
-
-typedef int32_t i32;
-typedef uint32_t u32;
 
 enum entity_type {
 	OBJECT_GUN,
@@ -28,29 +19,13 @@ enum entity_type {
 };
 
 struct entity {
-	i32 id;
+	int32_t id;
 	enum entity_type type;
 	b2BodyId body_id;
 	b2ShapeId shape_id;
 	Texture texture;
 
 	bool enable_hit_events;
-};
-
-struct gun {
-	char *name;
-	char *sprite_path;
-};
-
-struct bullet {
-	char *name;
-	char *sprite_path;
-};
-
-struct box {
-	char *name;
-	char *sprite_path;
-	bool static_;
 };
 
 static struct entity entities[MAX_ENTITIES];
@@ -62,7 +37,7 @@ static Texture background_texture;
 
 static struct entity *gun;
 
-static i32 next_entity_id;
+static int32_t next_entity_id;
 
 static Sound metal_blunt_1;
 
@@ -86,20 +61,6 @@ static void draw_entity(struct entity entity) {
 
 	Vector2 pos_screen = world_to_screen(pos_world);
 
-	// Using this would be more accurate for huge textures, but would probably be slower
-	// b2AABB aabb = b2Body_ComputeAABB(entity.body_id);
-	// Vector2 lower = world_to_screen(aabb.lowerBound);
-	// Vector2 upper = world_to_screen(aabb.upperBound);
-
-	float margin = -2.0f * PIXELS_PER_METER;
-	float left = pos_screen.x + margin;
-	float right = pos_screen.x - margin;
-	float top = pos_screen.y + margin;
-	float bottom = pos_screen.y - margin;
-	if (left > SCREEN_WIDTH || right < 0 || top > SCREEN_HEIGHT || bottom < 0) {
-		return;
-	}
-
 	b2Rot rot = b2Body_GetRotation(entity.body_id);
 	float angle = b2Rot_GetAngle(rot);
 
@@ -114,39 +75,15 @@ static void draw_entity(struct entity entity) {
 	DrawRectanglePro(rect, origin, -angle * RAD2DEG, color);
 }
 
-static void draw(void) {
-	BeginDrawing();
-
-	DrawTextureEx(background_texture, Vector2Zero(), 0, 2, WHITE);
-
-	for (size_t i = 0; i < entities_size; i++) {
-		struct entity entity = entities[i];
-
-		if (entity.texture.id > 0) {
-			draw_entity(entity);
-		}
-	}
-
-	EndDrawing();
-}
-
 static void despawn_entity(size_t entity_index) {
-	if (entities[entity_index].texture.id > 0) {
-		UnloadTexture(entities[entity_index].texture);
+	UnloadTexture(entities[entity_index].texture);
 
-		b2DestroyBody(entities[entity_index].body_id);
-	}
+	b2DestroyBody(entities[entity_index].body_id);
 
 	entities[entity_index] = entities[--entities_size];
 
 	if (entities[entity_index].type == OBJECT_GUN) {
 		gun = entities + entity_index;
-	}
-
-	// If the removed entity wasn't at the very end of the entities array,
-	// update entity_index's userdata
-	if (entity_index < entities_size && entities[entity_index].texture.id > 0) {
-		b2Body_SetUserData(entities[entity_index].body_id, (void *)entity_index);
 	}
 }
 
@@ -175,18 +112,12 @@ static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_ev
 	return b2CreatePolygonShape(body_id, &shape_def, &polygon);
 }
 
-static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool enable_hit_events) {
-	if (entities_size >= MAX_ENTITIES) {
-		return -1;
-	}
-
+static int32_t spawn_entity(b2BodyDef body_def, enum entity_type type, bool enable_hit_events) {
 	struct entity *entity = &entities[entities_size];
 
 	*entity = (struct entity){0};
 
 	entity->type = type;
-
-	body_def.userData = (void *)entities_size;
 
 	entity->body_id = b2CreateBody(world_id, &body_def);
 
@@ -195,13 +126,13 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool enable_h
 	char *texture_path = NULL;
 	switch (type) {
 		case OBJECT_GUN:
-			texture_path = "m60.png";
+			texture_path = "gun.png";
 			break;
 		case OBJECT_BULLET:
-			texture_path = "pg-7vl.png";
+			texture_path = "bullet.png";
 			break;
 		case OBJECT_GROUND:
-			texture_path = "concrete.png";
+			texture_path = "ground.png";
 			break;
 	}
 
@@ -246,7 +177,7 @@ static struct entity *spawn_gun(b2Vec2 pos) {
 static void spawn_ground(void) {
 	int ground_entity_count = 16;
 
-	Texture texture = LoadTexture("concrete.png");
+	Texture texture = LoadTexture("ground.png");
 	assert(texture.id > 0);
 
 	for (int i = 0; i < ground_entity_count; i++) {
@@ -284,8 +215,8 @@ static void update(void) {
 	b2World_Step(world_id, deltaTime, 4);
 
 	b2ContactEvents contactEvents = b2World_GetContactEvents(world_id);
-	for (i32 i = 0; i < contactEvents.hitCount; i++) {
-		printf("Hit event!\n");
+	for (int32_t i = 0; i < contactEvents.hitCount; i++) {
+		printf("Hit event! %d\n", rand());
 		b2ContactHitEvent *event = &contactEvents.hitEvents[i];
 		play_collision_sound(event);
 	}
@@ -299,7 +230,7 @@ static void update(void) {
 	b2Body_SetTransform(gun->body_id, gun_world_pos, b2MakeRot(gun_angle));
 
 	if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-		Texture texture = LoadTexture("concrete.png");
+		Texture texture = LoadTexture("bullet.png");
 		assert(texture.id > 0);
 
 		b2Vec2 local_point = {
@@ -316,10 +247,20 @@ static void update(void) {
 		spawn_bullet(muzzle_pos, gun_angle, velocity);
 	}
 
-	draw();
+	BeginDrawing();
+
+	DrawTextureEx(background_texture, Vector2Zero(), 0, 2, WHITE);
+
+	for (size_t i = 0; i < entities_size; i++) {
+		draw_entity(entities[i]);
+	}
+
+	EndDrawing();
 }
 
 int main(void) {
+	SetTraceLogLevel(LOG_WARNING);
+
 	SetConfigFlags(FLAG_VSYNC_HINT);
 	InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "box2d-raylib");
 
