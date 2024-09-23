@@ -34,10 +34,6 @@ struct gun_fields {
 	i32 ms_per_round_fired;
 };
 
-struct bullet_fields {
-	float density;
-};
-
 struct i32_map {
 	char *keys[MAX_I32_MAP_ENTRIES];
 	i32 values[MAX_I32_MAP_ENTRIES];
@@ -72,7 +68,6 @@ struct entity {
 
 	union {
 		struct gun_fields gun;
-		struct bullet_fields bullet;
 	};
 };
 
@@ -86,7 +81,6 @@ struct gun {
 struct bullet {
 	char *name;
 	char *sprite_path;
-	float density;
 };
 
 struct box {
@@ -126,18 +120,6 @@ static Sound metal_blunt_2;
 
 static size_t sound_cooldown_metal_blunt_1;
 static size_t sound_cooldown_metal_blunt_2;
-
-static bool paused = false;
-
-struct gun_on_fns {
-	void (*spawn)(void *globals, i32 self);
-	void (*despawn)(void *globals, i32 self);
-	void (*fire)(void *globals, i32 self);
-};
-
-struct bullet_on_fns {
-	void (*tick)(void *globals, i32 self);
-};
 
 static void despawn_entity(size_t entity_index);
 static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_file *file, bool flippable, bool enable_hit_events);
@@ -333,11 +315,10 @@ void game_fn_define_box(char *name, char *sprite_path, bool static_) {
 	};
 }
 
-void game_fn_define_bullet(char *name, char *sprite_path, float density) {
+void game_fn_define_bullet(char *name, char *sprite_path) {
 	bullet_definition = (struct bullet){
 		.name = name,
 		.sprite_path = sprite_path,
-		.density = density,
 	};
 }
 
@@ -523,11 +504,10 @@ static void play_collision_sound(b2ContactHitEvent *event) {
 	PlaySound(sound);
 }
 
-static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_events, float density) {
+static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_events) {
 	b2ShapeDef shape_def = b2DefaultShapeDef();
 
 	shape_def.enableHitEvents = enable_hit_events;
-	shape_def.density = density;
 
 	b2Polygon polygon = b2MakeBox(texture.width / 2.0f, texture.height / 2.0f);
 
@@ -552,8 +532,6 @@ static void copy_entity_definition(struct entity *entity) {
 			entity->gun.ms_per_round_fired = gun_definition.ms_per_round_fired;
 			break;
 		case OBJECT_BULLET:
-			entity->bullet.density = bullet_definition.density;
-			break;
 		case OBJECT_GROUND:
 			break;
 	}
@@ -596,7 +574,7 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_f
 
 	entity->texture_path = strdup(texture_path);
 
-	entity->shape_id = add_shape(entity->body_id, entity->texture, enable_hit_events, type == OBJECT_BULLET ? entity->bullet.density : 1.0f);
+	entity->shape_id = add_shape(entity->body_id, entity->texture, enable_hit_events);
 
 	entity->i32_map = malloc(sizeof(*entity->i32_map));
 	memset(entity->i32_map->buckets, 0xff, MAX_I32_MAP_ENTRIES * sizeof(u32));
@@ -730,11 +708,6 @@ static void update(void) {
 		gun->globals = malloc(gun_file->globals_size);
 		gun_file->init_globals_fn(gun->globals);
 
-		struct gun_on_fns *on_fns = gun->on_fns;
-		if (on_fns->spawn) {
-			on_fns->spawn(gun->globals, gun->id);
-		}
-
 		spawn_ground(concrete_file);
 	}
 
@@ -747,22 +720,20 @@ static void update(void) {
 		}
 	}
 
-	if (!paused) {
-		float deltaTime = GetFrameTime();
-		b2World_Step(world_id, deltaTime, 4);
+	float deltaTime = GetFrameTime();
+	b2World_Step(world_id, deltaTime, 4);
 
-		if (sound_cooldown_metal_blunt_1 > 0) {
-			sound_cooldown_metal_blunt_1--;
-		}
-		if (sound_cooldown_metal_blunt_2 > 0) {
-			sound_cooldown_metal_blunt_2--;
-		}
-		b2ContactEvents contactEvents = b2World_GetContactEvents(world_id);
-		for (i32 i = 0; i < contactEvents.hitCount; i++) {
-			b2ContactHitEvent *event = &contactEvents.hitEvents[i];
-			printf("Hit event!\n");
-			play_collision_sound(event);
-		}
+	if (sound_cooldown_metal_blunt_1 > 0) {
+		sound_cooldown_metal_blunt_1--;
+	}
+	if (sound_cooldown_metal_blunt_2 > 0) {
+		sound_cooldown_metal_blunt_2--;
+	}
+	b2ContactEvents contactEvents = b2World_GetContactEvents(world_id);
+	for (i32 i = 0; i < contactEvents.hitCount; i++) {
+		b2ContactHitEvent *event = &contactEvents.hitEvents[i];
+		printf("Hit event!\n");
+		play_collision_sound(event);
 	}
 
 	Vector2 mouse_pos = GetMousePosition();
@@ -773,17 +744,6 @@ static void update(void) {
 
 	if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
 		game_fn_spawn_bullet("vanilla:pg-7vl", 0.0, 0.0, 0.0, 100.0);
-	}
-
-	for (size_t entity_index = 0; entity_index < entities_size; entity_index++) {
-		struct entity *entity = &entities[entity_index];
-
-		if (entity->type == OBJECT_BULLET) {
-			struct bullet_on_fns *on_fns = entity->on_fns;
-			if (on_fns->tick) {
-				on_fns->tick(entity->globals, entity->id);
-			}
-		}
 	}
 
 	b2Body_SetTransform(gun->body_id, gun_world_pos, b2MakeRot(gun_angle));

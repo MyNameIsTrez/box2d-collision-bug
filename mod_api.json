@@ -58,23 +58,8 @@
 					"name": "sprite_path",
 					"type": "resource",
 					"resource_extension": ".png"
-				},
-				{
-					"name": "density",
-					"type": "f32"
 				}
-			],
-			"on_functions": {
-				"on_tick": {
-					"description": "Called every tick.",
-					"arguments": [
-						{
-							"name": "self",
-							"type": "i32"
-						}
-					]
-				}
-			}
+			]
 		},
 		"box": {
 			"description": "A static or dynamic box.",
