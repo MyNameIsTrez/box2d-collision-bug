@@ -30,10 +30,6 @@ enum entity_type {
 	OBJECT_GROUND,
 };
 
-struct gun_fields {
-	i32 ms_per_round_fired;
-};
-
 struct i32_map {
 	char *keys[MAX_I32_MAP_ENTRIES];
 	i32 values[MAX_I32_MAP_ENTRIES];
@@ -56,26 +52,15 @@ struct entity {
 	// There is no way for `streq(entity->texture_path, reload.path)` to work without ownership
 	char *texture_path;
 
-	void *dll;
-
-	void *on_fns;
-	void *globals;
-
 	bool flippable;
 	bool enable_hit_events;
 
 	struct i32_map *i32_map;
-
-	union {
-		struct gun_fields gun;
-	};
 };
 
 struct gun {
 	char *name;
 	char *sprite_path;
-	i32 ms_per_round_fired;
-	char *companion;
 };
 
 struct bullet {
@@ -120,9 +105,6 @@ static Sound metal_blunt_2;
 
 static size_t sound_cooldown_metal_blunt_1;
 static size_t sound_cooldown_metal_blunt_2;
-
-static void despawn_entity(size_t entity_index);
-static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_file *file, bool flippable, bool enable_hit_events);
 
 // TODO: Optimize this to O(1), by adding an array that maps
 // TODO: the entity ID to the entities[] index
@@ -254,14 +236,6 @@ bool game_fn_map_has_i32(i32 id, char *key) {
 	return false;
 }
 
-void game_fn_despawn_entity(i32 id) {
-	size_t entity_index = get_entity_index_from_entity_id(id);
-
-	if (entity_index != SIZE_MAX) {
-		despawn_entity(entity_index);
-	}
-}
-
 void game_fn_play_sound(char *path) {
 	Sound sound = LoadSound(path);
 	assert(sound.frameCount > 0);
@@ -275,36 +249,6 @@ void game_fn_play_sound(char *path) {
 float game_fn_rand(float min, float max) {
     float range = max - min;
     return min + rand() / (double)RAND_MAX * range;
-}
-
-static void spawn_bullet(b2Vec2 pos, float angle, b2Vec2 velocity, struct grug_file *file);
-
-void game_fn_spawn_bullet(char *name, float x, float y, float angle_in_degrees, float velocity_in_meters_per_second) {
-	struct grug_file *file = grug_get_entity_file(name);
-
-	file->define_fn();
-
-	char *texture_path = bullet_definition.sprite_path;
-
-	Texture texture = LoadTexture(texture_path);
-	assert(texture.id > 0);
-
-	b2Vec2 local_point = {
-		.x = gun->texture.width / 2.0f + texture.width / 2.0f + x,
-		.y = y
-	};
-	UnloadTexture(texture);
-	b2Vec2 muzzle_pos = b2Body_GetWorldPoint(gun->body_id, local_point);
-
-	b2Rot rot = b2Body_GetRotation(gun->body_id);
-	double gun_angle = b2Rot_GetAngle(rot);
-	double added_angle = angle_in_degrees * DEG2RAD;
-	bool facing_left = (gun_angle > PI / 2) || (gun_angle < -PI / 2);
-	rot = b2MakeRot(gun_angle + added_angle * (facing_left ? -1 : 1));
-
-	b2Vec2 velocity_unrotated = (b2Vec2){.x=velocity_in_meters_per_second * PIXELS_PER_METER, .y=0};
-	b2Vec2 velocity = b2RotateVector(rot, velocity_unrotated);
-	spawn_bullet(muzzle_pos, gun_angle, velocity, file);
 }
 
 void game_fn_define_box(char *name, char *sprite_path, bool static_) {
@@ -322,15 +266,10 @@ void game_fn_define_bullet(char *name, char *sprite_path) {
 	};
 }
 
-void game_fn_define_gun(char *name, char *sprite_path, i32 rounds_per_minute, char *companion) {
-	double rounds_per_second = rounds_per_minute / 60.0;
-	double seconds_per_round = 1.0 / rounds_per_second;
-
+void game_fn_define_gun(char *name, char *sprite_path) {
 	gun_definition = (struct gun){
 		.name = name,
 		.sprite_path = sprite_path,
-		.ms_per_round_fired = seconds_per_round * 1000.0,
-		.companion = companion,
 	};
 }
 
@@ -514,30 +453,19 @@ static b2ShapeId add_shape(b2BodyId body_id, Texture texture, bool enable_hit_ev
 	return b2CreatePolygonShape(body_id, &shape_def, &polygon);
 }
 
-static char *get_texture_path(struct entity *entity) {
-	switch (entity->type) {
+static char *get_texture_path(enum entity_type entity_type) {
+	switch (entity_type) {
 		case OBJECT_GUN:
-			return gun_definition.sprite_path;
+			return "mods/vanilla/m60/m60.png";
 		case OBJECT_BULLET:
-			return bullet_definition.sprite_path;
+			return "mods/vanilla/m60/pg-7vl.png";
 		case OBJECT_GROUND:
-			return box_definition.sprite_path;
+			return "mods/vanilla/concrete.png";
 	}
 	return NULL;
 }
 
-static void copy_entity_definition(struct entity *entity) {
-	switch (entity->type) {
-		case OBJECT_GUN:
-			entity->gun.ms_per_round_fired = gun_definition.ms_per_round_fired;
-			break;
-		case OBJECT_BULLET:
-		case OBJECT_GROUND:
-			break;
-	}
-}
-
-static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_file *file, bool flippable, bool enable_hit_events) {
+static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, bool flippable, bool enable_hit_events) {
 	if (entities_size >= MAX_ENTITIES) {
 		return -1;
 	}
@@ -546,20 +474,9 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_f
 
 	*entity = (struct entity){0};
 
-	entity->dll = file->dll;
-
-	entity->globals = malloc(file->globals_size);
-	file->init_globals_fn(entity->globals);
-
-	entity->on_fns = file->on_fns;
-
 	entity->type = type;
 
-	file->define_fn();
-
-	copy_entity_definition(entity);
-
-	char *texture_path = get_texture_path(entity);
+	char *texture_path = get_texture_path(type);
 
 	body_def.userData = (void *)entities_size;
 
@@ -592,31 +509,31 @@ static i32 spawn_entity(b2BodyDef body_def, enum entity_type type, struct grug_f
 	return entity->id;
 }
 
-static void spawn_bullet(b2Vec2 pos, float angle, b2Vec2 velocity, struct grug_file *file) {
+static void spawn_bullet(b2Vec2 pos, float angle, b2Vec2 velocity) {
 	b2BodyDef body_def = b2DefaultBodyDef();
 	body_def.type = b2_dynamicBody;
 	body_def.position = pos;
 	body_def.rotation = b2MakeRot(angle);
 	body_def.linearVelocity = velocity;
 
-	spawn_entity(body_def, OBJECT_BULLET, file, false, true);
+	spawn_entity(body_def, OBJECT_BULLET, false, true);
 }
 
-static struct entity *spawn_gun(struct grug_file *file, b2Vec2 pos) {
+static struct entity *spawn_gun(b2Vec2 pos) {
 	b2BodyDef body_def = b2DefaultBodyDef();
 	body_def.position = pos;
 
 	struct entity *gun_entity = entities + entities_size;
-	spawn_entity(body_def, OBJECT_GUN, file, true, false);
+
+	spawn_entity(body_def, OBJECT_GUN, true, false);
 
 	return gun_entity;
 }
 
-static void spawn_ground(struct grug_file *file) {
+static void spawn_ground(void) {
 	int ground_entity_count = 16;
 
-	file->define_fn();
-	char *texture_path = box_definition.sprite_path;
+	char *texture_path = get_texture_path(OBJECT_GROUND);
 	Texture texture = LoadTexture(texture_path);
 	assert(texture.id > 0);
 
@@ -624,7 +541,7 @@ static void spawn_ground(struct grug_file *file) {
 		b2BodyDef body_def = b2DefaultBodyDef();
 		body_def.position = (b2Vec2){ (i - ground_entity_count / 2) * texture.width, -100.0f };
 
-		spawn_entity(body_def, OBJECT_GROUND, file, false, false);
+		spawn_entity(body_def, OBJECT_GROUND, false, false);
 	}
 
 	UnloadTexture(texture);
@@ -657,20 +574,19 @@ static struct grug_file **get_type_files(char *define_type) {
 
 static void update(void) {
 	if (grug_mod_had_runtime_error()) {
-		draw();
+		fprintf(stderr, "Runtime error: %s\n", grug_get_runtime_error_reason());
+		fprintf(stderr, "Error occurred when the game called %s(), from %s\n", grug_on_fn_name, grug_on_fn_path);
 
+		draw();
 		return;
 	}
 
 	if (grug_regenerate_modified_mods()) {
-		draw();
+		fprintf(stderr, "Loading error: %s:%d: %s (grug.c:%d)\n", grug_error.path, grug_error.line_number, grug_error.msg, grug_error.grug_c_line_number);
 
+		draw();
 		return;
 	}
-
-	static size_t gun_index = 0;
-
-	struct grug_file *gun_file = get_type_files("gun")[gun_index];
 
 	struct grug_file **box_files = get_type_files("box");
 
@@ -702,13 +618,9 @@ static void update(void) {
 
 		b2Vec2 pos = { 100.0f, 0 };
 
-		gun = spawn_gun(gun_file, pos);
+		gun = spawn_gun(pos);
 
-		free(gun->globals);
-		gun->globals = malloc(gun_file->globals_size);
-		gun_file->init_globals_fn(gun->globals);
-
-		spawn_ground(concrete_file);
+		spawn_ground();
 	}
 
 	if (IsKeyPressed(KEY_C)) { // Clear bullets
@@ -742,11 +654,27 @@ static void update(void) {
 	Vector2 gun_to_mouse = Vector2Subtract(mouse_pos, gun_screen_pos);
 	double gun_angle = atan2(-gun_to_mouse.y, gun_to_mouse.x);
 
-	if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-		game_fn_spawn_bullet("vanilla:pg-7vl", 0.0, 0.0, 0.0, 100.0);
-	}
-
 	b2Body_SetTransform(gun->body_id, gun_world_pos, b2MakeRot(gun_angle));
+
+	if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+		char *texture_path = get_texture_path(OBJECT_BULLET);
+
+		Texture texture = LoadTexture(texture_path);
+		assert(texture.id > 0);
+
+		b2Vec2 local_point = {
+			.x = gun->texture.width / 2.0f + texture.width / 2.0f,
+			.y = 0.0f
+		};
+		UnloadTexture(texture);
+		b2Vec2 muzzle_pos = b2Body_GetWorldPoint(gun->body_id, local_point);
+
+		b2Rot rot = b2MakeRot(gun_angle);
+
+		b2Vec2 velocity_unrotated = (b2Vec2){.x=100.0f * PIXELS_PER_METER, .y=0.0f};
+		b2Vec2 velocity = b2RotateVector(rot, velocity_unrotated);
+		spawn_bullet(muzzle_pos, gun_angle, velocity);
+	}
 
 	draw();
 }

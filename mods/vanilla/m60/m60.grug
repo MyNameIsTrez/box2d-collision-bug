@@ -2,10 +2,5 @@ define() gun {
     return {
         .name = "M60",
         .sprite_path = "m60/m60.png",
-        .rounds_per_minute = 600,
     }
-}
-
-on_fire(self: i32) {
-    spawn_bullet("pg-7vl", 0.0, 0.0, 0.0, 100.0)
 }
